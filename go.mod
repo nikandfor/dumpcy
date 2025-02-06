@@ -1,4 +1,4 @@
-module nikand.dev/go/proxy
+module nikand.dev/go/dumpcy
 
 go 1.23.0
 
