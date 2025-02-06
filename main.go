@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"sync"
 
 	"nikand.dev/go/cli"
@@ -19,8 +20,7 @@ func main() {
 		Name:   "dumproxy",
 		Action: run,
 		Flags: []*cli.Flag{
-			cli.NewFlag("listen-tcp,ltcp", ":3400", "tcp proxy, uses tcp-remote as destination address"),
-			cli.NewFlag("tcp-remote,r", "", "tcp remote address to connect to"),
+			cli.NewFlag("tcp", "", "tcp proxy (listen_addr=remote_addr)"),
 
 			{Description: "logging flags"},
 			cli.NewFlag("log", "stderr?console=dm", "log destination"),
@@ -46,25 +46,25 @@ func run(c *cli.Command) (err error) {
 
 	g := graceful.New()
 
-	if q := c.String("listen-tcp"); q != "" {
-		if c.String("tcp-remote") == "" {
-			return errors.New("tcp-remote required for tcp proxy")
+	for _, q := range strings.FieldsFunc(c.String("tcp"), isComma) {
+		loc, rem, _ := strings.Cut(q, "=")
+
+		if _, err := net.ResolveTCPAddr("tcp", rem); err != nil {
+			return errors.Wrap(err, "tcp proxy: invalid remote address")
 		}
 
-		l, err := net.Listen("tcp", q)
+		l, err := net.Listen("tcp", loc)
 		if err != nil {
-			return errors.Wrap(err, "listen tcp")
+			return errors.Wrap(err, "tcp proxy: listen")
 		}
 
 		defer closer(l, &err, "close tcp listener")
 
-		tr.Printw("listeting tcp", "addr", l.Addr())
+		tr.Printw("listeting tcp", "addr", l.Addr(), "remote", rem)
 
 		g.Add(func(ctx context.Context) error {
 			var wg sync.WaitGroup
 			defer wg.Wait()
-
-			cmd := c
 
 			for {
 				c, err := hnet.Accept(ctx, l)
@@ -77,7 +77,7 @@ func run(c *cli.Command) (err error) {
 				go func() (err error) {
 					defer wg.Done()
 
-					return handleConn(ctx, c, cmd)
+					return handleConn(ctx, c, rem)
 				}()
 			}
 		})
@@ -86,14 +86,14 @@ func run(c *cli.Command) (err error) {
 	return g.Run(ctx, graceful.IgnoreErrors(context.Canceled))
 }
 
-func handleConn(ctx context.Context, c net.Conn, cmd *cli.Command) (err error) {
-	tr, ctx := tlog.SpawnFromContextAndWrap(ctx, "conn", "raddr", c.RemoteAddr(), "laddr", c.LocalAddr())
+func handleConn(ctx context.Context, c net.Conn, remote string) (err error) {
+	tr, ctx := tlog.SpawnFromContextAndWrap(ctx, "conn", "laddr", c.LocalAddr(), "raddr", c.RemoteAddr(), "remote", remote)
 	defer tr.Finish("err", &err)
 
 	defer closer(c, &err, "close client conn")
 	var d net.Dialer
 
-	r, err := d.DialContext(ctx, "tcp", cmd.String("tcp-remote"))
+	r, err := d.DialContext(ctx, "tcp", remote)
 	if err != nil {
 		return errors.Wrap(err, "dial remote")
 	}
@@ -166,3 +166,5 @@ func closerFunc(c func() error, errp *error, msg string, args ...any) {
 		*errp = errors.Wrap(e, msg, args...)
 	}
 }
+
+func isComma(r rune) bool { return r == ',' }
