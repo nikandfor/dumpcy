@@ -7,18 +7,21 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"nikand.dev/go/cli"
 	"nikand.dev/go/graceful"
 	"nikand.dev/go/hacked/hnet"
 	"tlog.app/go/errors"
 	"tlog.app/go/tlog"
+	"tlog.app/go/tlog/ext/tlflag"
 )
 
 func main() {
 	app := &cli.Command{
 		Name:   "dumproxy",
 		Action: run,
+		Before: before,
 		Flags: []*cli.Flag{
 			cli.NewFlag("tcp", "", "tcp proxy (listen_addr=remote_addr)"),
 
@@ -35,6 +38,18 @@ func main() {
 	}
 
 	cli.RunAndExit(app, os.Args, os.Environ())
+}
+
+func before(c *cli.Command) error {
+	w, err := tlflag.OpenWriter(c.String("log"))
+	if err != nil {
+		return errors.Wrap(err, "open log writer")
+	}
+
+	tlog.DefaultLogger = tlog.New(w)
+	tlog.DefaultLogger.SetVerbosity(c.String("v"))
+
+	return nil
 }
 
 func run(c *cli.Command) (err error) {
@@ -131,6 +146,8 @@ func proxy(ctx context.Context, w, r net.Conn, name string) (err error) {
 		}
 	}()
 
+	meter := MakeMeter(time.Now().UnixNano())
+
 	defer closerFunc(w.(*net.TCPConn).CloseWrite, &err, "%v: close writer", name)
 
 	var buf [0x4000]byte
@@ -152,7 +169,11 @@ func proxy(ctx context.Context, w, r net.Conn, name string) (err error) {
 			return errors.Wrap(err, "write")
 		}
 
-		tr.Printw("written", "proxy", name, "m", m, "m", tlog.NextAsHex, m)
+		now := time.Now()
+		meter.Add(now.UnixNano(), m)
+		bps := meter.SpeedBPS()
+
+		tr.Printw("written", "proxy", name, "m", m, "m", tlog.NextAsHex, m, "rate_MBps", bps/1e6)
 	}
 }
 

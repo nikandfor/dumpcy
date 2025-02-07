@@ -13,5 +13,6 @@ require (
 require (
 	golang.org/x/sys v0.22.0 // indirect
 	golang.org/x/term v0.22.0 // indirect
+	tlog.app/go/eazy v0.4.1 // indirect
 	tlog.app/go/loc v0.7.0 // indirect
 )
