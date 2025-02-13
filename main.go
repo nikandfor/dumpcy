@@ -25,6 +25,8 @@ func main() {
 		Flags: []*cli.Flag{
 			cli.NewFlag("tcp", "", "tcp proxy (listen_addr=remote_addr)"),
 
+			cli.NewFlag("buffer-size", 0x4000, "proxy buffer size"),
+
 			{Description: "logging flags"},
 			cli.NewFlag("log", "stderr?console=dm", "log destination"),
 			cli.NewFlag("v", "", "log verbosity"),
@@ -59,6 +61,8 @@ func run(c *cli.Command) (err error) {
 	ctx := context.Background()
 	ctx = tlog.ContextWithSpan(ctx, tr)
 
+	bufSize := c.Int("buffer-size")
+
 	g := graceful.New()
 
 	for _, q := range strings.FieldsFunc(c.String("tcp"), isComma) {
@@ -92,7 +96,7 @@ func run(c *cli.Command) (err error) {
 				go func() (err error) {
 					defer wg.Done()
 
-					return handleConn(ctx, c, rem)
+					return handleConn(ctx, c, rem, bufSize)
 				}()
 			}
 		})
@@ -101,7 +105,7 @@ func run(c *cli.Command) (err error) {
 	return g.Run(ctx, graceful.IgnoreErrors(context.Canceled))
 }
 
-func handleConn(ctx context.Context, c net.Conn, remote string) (err error) {
+func handleConn(ctx context.Context, c net.Conn, remote string, bufSize int) (err error) {
 	tr, ctx := tlog.SpawnFromContextAndWrap(ctx, "conn", "laddr", c.LocalAddr(), "raddr", c.RemoteAddr(), "remote", remote)
 	defer tr.Finish("err", &err)
 
@@ -118,10 +122,10 @@ func handleConn(ctx context.Context, c net.Conn, remote string) (err error) {
 	errc := make(chan error, 2)
 
 	go func() {
-		errc <- proxy(ctx, c, r, "remote to client")
+		errc <- proxy(ctx, c, r, "remote to client", bufSize)
 	}()
 	go func() {
-		errc <- proxy(ctx, r, c, "client to remote")
+		errc <- proxy(ctx, r, c, "client to remote", bufSize)
 	}()
 
 	err = <-errc
@@ -137,7 +141,7 @@ func handleConn(ctx context.Context, c net.Conn, remote string) (err error) {
 	return nil
 }
 
-func proxy(ctx context.Context, w, r net.Conn, name string) (err error) {
+func proxy(ctx context.Context, w, r net.Conn, name string, bufSize int) (err error) {
 	tr := tlog.SpanFromContext(ctx)
 
 	defer func() {
@@ -150,10 +154,10 @@ func proxy(ctx context.Context, w, r net.Conn, name string) (err error) {
 
 	defer closerFunc(w.(*net.TCPConn).CloseWrite, &err, "%v: close writer", name)
 
-	var buf [0x4000]byte
+	buf := make([]byte, bufSize)
 
 	for {
-		n, err := hnet.Read(ctx, r, buf[:])
+		n, err := hnet.Read(ctx, r, buf)
 		if errors.Is(err, io.EOF) {
 			tr.Printw("eof", "proxy", name)
 			return nil
