@@ -15,6 +15,7 @@ import (
 	"tlog.app/go/errors"
 	"tlog.app/go/tlog"
 	"tlog.app/go/tlog/ext/tlflag"
+	"tlog.app/go/tlog/tlio"
 )
 
 func main() {
@@ -48,6 +49,17 @@ func before(c *cli.Command) error {
 		return errors.Wrap(err, "open log writer")
 	}
 
+	tlio.WalkWriter(w, func(w io.Writer) error {
+		c, ok := w.(*tlog.ConsoleWriter)
+		if !ok {
+			return nil
+		}
+
+		c.BytesDumpMinLen = 1
+
+		return nil
+	})
+
 	tlog.DefaultLogger = tlog.New(w)
 	tlog.DefaultLogger.SetVerbosity(c.String("v"))
 
@@ -55,7 +67,7 @@ func before(c *cli.Command) error {
 }
 
 func run(c *cli.Command) (err error) {
-	tr := tlog.Start("dumproxy")
+	tr := tlog.Start("dumpcy")
 	defer tr.Finish("err", &err)
 
 	ctx := context.Background()
@@ -110,6 +122,7 @@ func handleConn(ctx context.Context, c net.Conn, remote string, bufSize int) (er
 	defer tr.Finish("err", &err)
 
 	defer closer(c, &err, "close client conn")
+
 	var d net.Dialer
 
 	r, err := d.DialContext(ctx, "tcp", remote)
@@ -118,6 +131,8 @@ func handleConn(ctx context.Context, c net.Conn, remote string, bufSize int) (er
 	}
 
 	defer closer(r, &err, "close remote conn")
+
+	tr.Printw("remote conn", "laddr", r.LocalAddr(), "raddr", r.RemoteAddr())
 
 	errc := make(chan error, 2)
 
@@ -154,6 +169,7 @@ func proxy(ctx context.Context, w, r net.Conn, name string, bufSize int) (err er
 
 	defer closerFunc(w.(*net.TCPConn).CloseWrite, &err, "%v: close writer", name)
 
+	var off int64
 	buf := make([]byte, bufSize)
 
 	for {
@@ -166,7 +182,9 @@ func proxy(ctx context.Context, w, r net.Conn, name string, bufSize int) (err er
 			return errors.Wrap(err, "read")
 		}
 
-		tr.Printw("read", "proxy", name, "n", n, "n", tlog.NextAsHex, n, "read", buf[:n])
+		tr.Printw("read", "proxy", name, "n", n, "n", tlog.NextAsHex, n, "off", tlog.NextAsHex, off, "read", buf[:n])
+
+		off += int64(n)
 
 		m, err := w.Write(buf[:n])
 		if err != nil {
